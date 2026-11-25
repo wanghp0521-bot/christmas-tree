@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Merry Christmas · 3D 旋转圣诞树</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;}
+  canvas{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab;}
+  canvas.dragging{cursor:grabbing;}
+  .hint{
+    position:fixed;left:0;right:0;bottom:14px;text-align:center;
+    font:12px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    letter-spacing:.12em;color:rgba(255,255,255,.32);pointer-events:none;user-select:none;
+    transition:opacity 1.2s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint" id="hint">拖动画面旋转 · 双击全屏</div>
+<noscript>
+  <div style="position:fixed;left:0;right:0;top:40%;text-align:center;color:#fff;
+              font:16px/1.8 'Microsoft YaHei',sans-serif">
+    这个页面需要启用 JavaScript 才能显示动画。<br>请用 Chrome / Edge 打开本文件。
+  </div>
+</noscript>
+<script>
+window.addEventListener('error', function (e) {
+  var d = document.createElement('div');
+  d.style.cssText = 'position:fixed;left:16px;top:16px;right:16px;z-index:9;padding:12px 14px;' +
+    'background:rgba(30,0,0,.9);color:#ff8a8a;font:13px/1.6 Consolas,monospace;' +
+    'border:1px solid #ff8a8a;border-radius:8px;white-space:pre-wrap;';
+  d.textContent = '脚本出错：' + (e.message || e.error) + '\n' + (e.filename || '') + ':' + (e.lineno || '');
+  document.body.appendChild(d);
+}, true);
+</script>
+<script>
+"use strict";
+
+/* ============================================================
+   移植自 github.com/ZekangLi-Zico/Christmas-Tree (tree.py)
+   Python + Pygame  →  原生 Canvas 2D（零依赖，单文件可离线运行）
+   ============================================================ */
+
+// ===== 顶部文字（原代码里的 "647" 是作者私人备注，这里改成你自己的文本）=====
+const NAME_TEXT  = "647";          // ← 改成你的名字 / 想显示的字
+const TITLE_TEXT = "Merry Christmas";
+
+// ===== 全局参数（与 Python 版保持一致）=====
+const CAM_DIST    = 13;            // 相机前后距离
+const CAM_HEIGHT  = 6.0;           // 相机高度（俯视）
+const TREE_H      = 12.0;          // 树高
+const PITCH       = -0.25;         // 俯仰角
+const cosP = Math.cos(PITCH), sinP = Math.sin(PITCH);
+const TAU = Math.PI * 2;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, img = null, buf = null, pxScale = 1;
+
+// ===== 粒子数据 =====
+let PX, PY, PZ, PR, PG, PB, PBRI, PN = 0;
+const FOOT = [];
+
+// ---------- 树体粒子 ----------
+function genTree(treePoints, out) {
+  const loops = 9;
+  const spiralN = Math.floor(treePoints * 0.7);
+
+  // 70% 螺旋灯带（下密上疏）
+  for (let i = 0; i < spiralN; i++) {
+    const u = Math.random();
+    const h = Math.pow(u, 1.6);
+    const y = TREE_H * h + 0.2;
+
+    let baseR = Math.pow(1 - h, 1.1) * 3.2;
+    const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+    baseR *= 1.0 + 0.65 * branchWave;
+
+    const t = u * loops * TAU;
+    const angle = t + (Math.random() * 0.44 - 0.22);
+    const r = baseR * (0.85 + Math.random() * 0.23);
+
+    out.x.push(Math.cos(angle) * r);
+    out.y.push(y);
+    out.z.push(Math.sin(angle) * r);
+
+    let midBoost = 1.0 - Math.abs(h - 0.55) * 1.5;
+    midBoost = Math.max(0.15, midBoost);
+    let g = 155 + Math.floor(90 * midBoost) + Math.floor(Math.random() * 36 - 15);
+    let b = 185 + Math.floor(70 * midBoost) + Math.floor(Math.random() * 51 - 15);
+    let rr = 255;
+
+    if (Math.random() < 0.08) {          // 更亮的小灯泡
+      rr = 255;
+      g = 255 - Math.floor(Math.random() * 36);
+      b = 230 + Math.floor(Math.random() * 26);
+    }
+    out.r.push(rr);
+    out.g.push(Math.min(255, Math.max(0, g)));
+    out.b.push(Math.min(255, Math.max(0, b)));
+    out.br.push(0.70);
+  }
+
+  // 30% 随机填充（毛茸茸轮廓）
+  for (let i = 0; i < treePoints - spiralN; i++) {
+    const h = Math.pow(Math.random(), 1.9);
+    const y = TREE_H * h + 0.2 + (Math.random() * 0.16 - 0.08);
+
+    let baseR = Math.pow(1 - h, 1.1) * 4.3;
+    const branchWave = Math.max(0, Math.sin((h * 5.8 + 0.15) * TAU));
+    baseR *= 1.0 + 0.65 * branchWave;
+
+    const r = baseR * Math.sqrt(Math.random());
+    const angle = Math.random() * TAU;
+
+    out.x.push(Math.cos(angle) * r + (Math.random() * 0.16 - 0.08));
+    out.y.push(y);
+    out.z.push(Math.sin(angle) * r + (Math.random() * 0.16 - 0.08));
+    out.r.push(255);
+    out.g.push(165 + Math.floor(Math.random() * 61));
+    out.b.push(190 + Math.floor(Math.random() * 61));
+    out.br.push(1.50);
+  }
+}
+
+// ---------- 地面光环 ----------
+function genGround(count, out) {
+  const rings = [4.6, 6.0, 7.4, 8.8, 10.2, 11.4];
+  for (let i = 0; i < count; i++) {
+    const ring = rings[Math.floor(Math.random() * rings.length)];
+    const r = ring + gauss() * 0.3;
+    const theta = Math.random() * TAU;
+
+    out.x.push(Math.cos(theta) * r);
+    out.y.push(-0.25);
+    out.z.push(Math.sin(theta) * r);
+
+    const c = Math.random() < 0.15 ? 235 + Math.floor(Math.random() * 21)
+                                   : 190 + Math.floor(Math.random() * 46);
+    out.r.push(c); out.g.push(c); out.b.push(255);
+    out.br.push(0.72);
+  }
+}
+
+// ---------- 空中星点 ----------
+function genStars(count, out) {
+  for (let i = 0; i < count; i++) {
+    const base = 215 + Math.floor(Math.random() * 41);
+    out.x.push(Math.random() * 36 - 18);
+    out.y.push(Math.random() * 15 + 3);
+    out.z.push(Math.random() * 36 - 18);
+    out.r.push(base); out.g.push(base); out.b.push(255);
+    out.br.push(0.92);
+  }
+}
+
+// ---------- 树顶 3D 爱心 ----------
+function genHeart(count, out) {
+  const scale = 0.9;
+  const topY = TREE_H + 0.05;
+  let guard = 0;
+  let n = 0;
+  while (n < count && guard < count * 60) {
+    guard++;
+    const x = Math.random() * 2.6 - 1.3;
+    const y = Math.random() * 2.8 - 1.4;
+    const f = Math.pow(x * x + y * y - 1.0, 3) - x * x * Math.pow(y, 3);
+    if (f <= 0) {
+      out.x.push(x * scale * 0.8);
+      out.y.push(topY + (y + 1.0) * scale * 0.5);
+      out.z.push(Math.random() * 0.36 - 0.18);
+
+      const dist = Math.hypot(x, y);
+      const factor = Math.max(0.35, 1.15 - 0.5 * dist);
+      let g = Math.floor(130 * factor + 80);
+      let b = Math.floor(190 * factor + 70);
+      g = Math.max(120, Math.min(255, g));
+      b = Math.max(120, Math.min(255, b));
+
+      out.r.push(255); out.g.push(g); out.b.push(b);
+      out.br.push(0.95);
+      n++;
+    }
+  }
+}
+
+// 高斯随机（Box-Muller）
+function gauss() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
+}
+
+// ---------- 组装数据 ----------
+function buildWorld() {
+  const area = W * H;
+  const q = Math.min(1, Math.max(0.42, area / (1600 * 900)));
+  const TREE_POINTS   = Math.round(50000 * q);
+  const GROUND_POINTS = Math.round(4000  * q);
+  const STAR_POINTS   = Math.round(1200  * q);
+  const HEART_POINTS  = Math.round(1000  * q);
+
+  const o = { x: [], y: [], z: [], r: [], g: [], b: [], br: [] };
+  genTree(TREE_POINTS, o);
+  genGround(GROUND_POINTS, o);
+  genStars(STAR_POINTS, o);
+  genHeart(HEART_POINTS, o);
+
+  PN = o.x.length;
+  PX = new Float32Array(o.x);
+  PY = new Float32Array(o.y);
+  PZ = new Float32Array(o.z);
+  PR = new Float32Array(o.r);
+  PG = new Float32Array(o.g);
+  PB = new Float32Array(o.b);
+  PBRI = new Float32Array(o.br);
+}
+
+// ---------- 笔刷脚印（按粒子大小预生成权重）----------
+function makeFoot(s) {
+  const half = Math.floor(s / 2);
+  const sigma = Math.max(0.6, s / 2.8);
+  const arr = [];
+  for (let dy = -half; dy <= half; dy++) {
+    for (let dx = -half; dx <= half; dx++) {
+      const w = Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+      if (w > 0.06) arr.push(dx, dy, w);
+    }
+  }
+  return new Float32Array(arr);
+}
+for (let s = 1; s <= 9; s++) FOOT[s] = makeFoot(s);
+
+// ---------- 自适应画布 ----------
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  let cw = Math.round(window.innerWidth * dpr);
+  let ch = Math.round(window.innerHeight * dpr);
+  // 控制总像素量，保证 60fps
+  const maxPixels = 2200 * 1300;
+  if (cw * ch > maxPixels) {
+    const k = Math.sqrt(maxPixels / (cw * ch));
+    cw = Math.round(cw * k);
+    ch = Math.round(ch * k);
+  }
+  W = cw; H = ch;
+  canvas.width = W;
+  canvas.height = H;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  img = ctx.createImageData(W, H);
+  buf = img.data;
+  pxScale = H / 900;
+}
+
+// ---------- 前景 2D 大雪花 ----------
+let flakes = [];
+const SNOW_N = 10;
+
+function newFlake() {
+  const y = -(80 + Math.random() * 70) * pxScale;
+  return {
+    x: Math.random() * W,
+    y: y,
+    r: (10 + Math.random() * 6) * pxScale,
+    v: (30 + Math.random() * 15),
+    life: 0,
+    maxLife: 1
+  };
+}
+function initSnow() {
+  flakes = [];
+  for (let i = 0; i < SNOW_N; i++) {
+    const f = newFlake();
+    f.y = -(Math.random() * 20) * pxScale;
+    f.life = (H + 80 * pxScale - f.y) / (f.v * pxScale);
+    f.maxLife = f.life;
+    flakes.push(f);
+  }
+}
+function updateSnow(dt) {
+  for (const f of flakes) {
+    f.y += f.v * pxScale * dt;
+    f.life -= dt;
+    if (f.life <= 0 || f.y > H + 50 * pxScale) {
+      const nf = newFlake();
+      f.x = nf.x; f.y = nf.y; f.r = nf.r; f.v = nf.v;
+      f.life = (H + 80 * pxScale - f.y) / (f.v * pxScale);
+      f.maxLife = f.life;
+    }
+  }
+}
+
+// ---------- 3D → 2D 投影 + 加色渲染 ----------
+let angle = 0;
+const KMUL = 0.44;      // 单粒子亮度系数（加色叠加后整体成形）
+const RED_BAL = 0.80;   // 红通道压制，避免加色叠加后偏粉
+
+function render() {
+  // 清屏
+  buf.fill(0);
+
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const cx = W / 2, cy = H * 0.60;
+  const f0 = H * 0.75;
+  const sizeK = 6.0 * pxScale;
+
+  for (let i = 0; i < PN; i++) {
+    const x = PX[i], y = PY[i], z = PZ[i];
+
+    const xz = x * cosA - z * sinA;
+    const zz = x * sinA + z * cosA;
+
+    const yp = y * cosP - zz * sinP - CAM_HEIGHT;
+    const zp = y * sinP + zz * cosP + CAM_DIST;
+    if (zp <= 0.1) continue;
+
+    const f = f0 / zp;
+    const sx = (cx + xz * f) | 0;
+    const sy = (cy - yp * f) | 0;
+
+    let s = Math.round(sizeK - zp * 0.13 * pxScale);
+    if (s < 1) s = 1; else if (s > 8) s = 8;
+
+    // 远处稍微压暗，形成纵深
+    const fade = Math.max(0.62, Math.min(1.06, 1.02 - (zp - 8) * 0.012));
+    const k = KMUL * fade * PBRI[i];
+    const cr = PR[i] * k * RED_BAL, cg = PG[i] * k, cb = PB[i] * k;
+
+    const foot = FOOT[s];
+    const nf = foot.length;
+    for (let j = 0; j < nf; j += 3) {
+      const px = sx + foot[j];
+      const py = sy + foot[j + 1];
+      if (px < 0 || py < 0 || px >= W || py >= H) continue;
+      const w = foot[j + 2];
+      const idx = (py * W + px) * 4;
+      buf[idx]     += cr * w;
+      buf[idx + 1] += cg * w;
+      buf[idx + 2] += cb * w;
+      buf[idx + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(img, 0, 0);
+
+  drawText();
+  drawSnow();
+}
+
+// ---------- 左上角文字 ----------
+function drawText() {
+  const base = Math.max(26, 45 * pxScale);
+  ctx.save();
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.shadowColor = 'rgba(190,225,255,0.85)';
+  ctx.shadowBlur = base * 0.55;
+
+  ctx.font = `italic ${base}px "Monotype Corsiva","Brush Script MT","Segoe Script",Georgia,serif`;
+  const tx = Math.max(24, W * 0.025);
+  const ty = H / 3;
+  ctx.fillText(TITLE_TEXT, tx, ty);
+
+  ctx.font = `italic ${base * 0.95}px "Monotype Corsiva","Brush Script MT","Segoe Script",Georgia,serif`;
+  ctx.fillText(NAME_TEXT, tx, ty + base * 1.28);
+  ctx.restore();
+}
+
+// ---------- 前景大雪花 ----------
+function drawSnow() {
+  for (const f of flakes) {
+    if (f.maxLife <= 0) continue;
+    const phase = Math.max(0, Math.min(1, f.life / f.maxLife));
+    const alpha = phase > 0.3 ? 255 : Math.floor(255 * (phase / 0.3));
+    const cx = f.x, cy = f.y, r = f.r;
+
+    const layers = [
+      [r * 1.3, alpha / 20],
+      [r * 1.0, alpha / 12],
+      [r * 0.75, alpha / 6],
+      [r * 0.55, alpha / 3],
+      [r * 0.45, alpha]
+    ];
+    for (const [rad, a] of layers) {
+      if (a <= 0 || rad <= 0) continue;
+      ctx.beginPath();
+      ctx.globalAlpha = Math.min(1, a / 255);
+      ctx.fillStyle = '#fff';
+      ctx.arc(cx, cy, rad, 0, TAU);
+      ctx.fill();
+    }
+  }
+    ctx.globalAlpha = 1;
+}
+
+// ---------- 主循环 ----------
+let dragging = false, lastX = 0, autoSpin = 1;
+let lastTick = 0, lastRaf = 0;
+
+// 单帧推进：不依赖任何调度器，谁调用都能出画面
+function drive() {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  let dt = lastTick ? (now - lastTick) / 1000 : 0.016;
+  lastTick = now;
+  if (dt > 0.08) dt = 0.08;
+
+  angle += 0.27 * dt * autoSpin;
+  updateSnow(dt);
+  render();
+}
+
+// 正常路径：requestAnimationFrame
+function rafLoop() {
+  lastRaf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  drive();
+  requestAnimationFrame(rafLoop);
+}
+
+// 兜底路径：某些内嵌预览器/后台窗口会把 rAF 限流到 1~2fps，甚至不回调，
+// 这时用定时器接管，保证画面不会一直是黑屏
+function watchdog() {
+  const now = Date.now ? Date.now() : 0;
+  const last = lastRaf || 0;
+  if (!last || now - last > 150) drive();
+}
+
+// ---------- 交互：拖动旋转 / 双击全屏 ----------
+canvas.addEventListener('pointerdown', e => {
+  dragging = true; lastX = e.clientX;
+  canvas.classList.add('dragging');
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  angle += (e.clientX - lastX) * 0.006;
+  lastX = e.clientX;
+});
+canvas.addEventListener('pointerup', e => {
+  dragging = false;
+  canvas.classList.remove('dragging');
+});
+canvas.addEventListener('dblclick', () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+});
+
+let rt = null;
+window.addEventListener('resize', () => {
+  clearTimeout(rt);
+  rt = setTimeout(() => {
+    const scaleX = W, scaleY = H;
+    resize();
+    // 雪花坐标按新尺寸缩放，避免跳变
+    for (const f of flakes) {
+      f.x *= W / (scaleX || W);
+      f.y *= H / (scaleY || H);
+      f.r *= pxScale;
+    }
+    buildWorld();
+    drive();          // 尺寸变化后立刻补一帧，避免闪黑
+  }, 220);
+});
+
+// 提示 6 秒后淡出
+setTimeout(function () { document.getElementById('hint').style.opacity = '0'; }, 6000);
+
+// ---------- 启动 ----------
+resize();
+buildWorld();
+initSnow();
+drive();                        // 先同步画一帧（即使 rAF 被限流也有画面）
+requestAnimationFrame(rafLoop); // 正常动画
+setInterval(watchdog, 60);      // rAF 停摆时的兜底
+</script>
+</body>
+</html>
